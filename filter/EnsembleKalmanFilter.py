@@ -10,7 +10,7 @@ class EnsembleKalmanFilter:
         self.nEnsembles=nEnsembles
         self.lorenzDim=lorenzDim
         self.timeIncrement=0.1
-        self.finalTime=10
+        self.finalTime=5
         self.totalTimeSteps=int(self.finalTime/self.timeIncrement)
         self.trueState = np.full((self.totalTimeSteps + 1, self.lorenzDim), np.nan)
         self.syntheticDataDim=int(self.lorenzDim/2)
@@ -22,6 +22,9 @@ class EnsembleKalmanFilter:
         self.rmse=None
         self.enkfReconstructionCovTrace=None
 
+        self.optimalInflationAlpha=None
+        self.optimalLocalizationR=None
+
     # def generateSyntheticDataLorenz96RK4(self):
     #     L96=Lorenz96Model(self.lorenzDim)
     #     initial=L96.solveLorenz96RK4(100)
@@ -32,15 +35,15 @@ class EnsembleKalmanFilter:
 
     def generateSyntheticDataLorenz96Int(self):
         L96=Lorenz96Model(self.lorenzDim)
-        initial=L96.solveLorenz96Int(np.arange(0,1001,self.timeIncrement))
+        initial=L96.solveLorenz96Int(np.arange(0,101,self.timeIncrement))
         L96.lorenzInitial = initial[len(initial)-1]
         simulation=L96.solveLorenz96Int(np.arange(0,self.finalTime+self.timeIncrement,self.timeIncrement))
         for n in range(len(self.syntheticData)):
             self.trueState[n] = simulation[n]
             for m in range(self.syntheticDataDim):
                 # self.syntheticData[n][m]=simulation[n][1+2*m]+np.random.normal(0,1)
-                self.syntheticData[n][m] = simulation[n][1 + 2 * m]
-            self.syntheticData[n]+=np.random.multivariate_normal(np.zeros(self.syntheticDataDim),np.identity(self.syntheticDataDim))
+                self.syntheticData[n][m] = simulation[n][1 + 2 * m] # noise for synthetic data is added below
+            self.syntheticData[n]+=np.random.multivariate_normal(np.zeros(self.syntheticDataDim),self.R)
 
     # def generateInitialEnsembleLorenz96RK4(self):
     #     L96=Lorenz96Model(self.lorenzDim)
@@ -51,13 +54,13 @@ class EnsembleKalmanFilter:
 
     def generateInitialEnsembleLorenz96Int(self):
         L96=Lorenz96Model(self.lorenzDim)
-        initial=L96.solveLorenz96Int(np.arange(0,1001,self.timeIncrement))
+        initial=L96.solveLorenz96Int(np.arange(0,101,self.timeIncrement))
         L96.lorenzInitial=initial[len(initial)-1]
-        simulation=L96.solveLorenz96Int(np.arange(0,5001,self.timeIncrement))
+        simulation=L96.solveLorenz96Int(np.arange(0,501,self.timeIncrement))
         for n in range(self.nEnsembles):
             self.initialEnsemble[n]=simulation[np.floor(np.random.uniform(0,len(simulation)-1))]
 
-    def runPerturbedObsENKF(self):
+    def runPerturbedObsENKF(self,alpha=None,r=None):
         H=np.zeros((self.syntheticDataDim,self.lorenzDim))
         for n in range(self.syntheticDataDim):
             H[n][1+2*n]=1
@@ -79,24 +82,35 @@ class EnsembleKalmanFilter:
 
             mu_f=np.mat(np.mean(x_f,axis=0)).T
 
+            # Perform inflation.
+            if(alpha!=None):
+                for ne in range(self.nEnsembles):
+                    x_f[ne]=mu_f.T+math.sqrt(1+alpha)*(x_f[ne]-mu_f.T)
+
             # P_f=np.cov(np.mat(x_f).T)
             P_f=np.mat(np.zeros((self.lorenzDim,self.lorenzDim)))
             for ne in range(self.nEnsembles):
                 P_f+=(np.mat(x_f[ne]).T-mu_f)*(np.mat(x_f[ne]).T-mu_f).T
             P_f=P_f/(self.nEnsembles-1)
 
+            # Perform localization.
+            if (r!=None):
+                P_f=np.multiply(self.constructLocalizationMatrix(r),P_f)
+
+            P_farray=np.array(P_f)
             k=P_f*H.T*la.inv(H*P_f*H.T+self.R)
             # k = P_f * H.T * la.solve((H * P_f * H.T + self.R),np.mat(np.identity(20)))
 
             for ne in range(self.nEnsembles):
-                x[ne]=(np.mat(x_f[ne]).T+k*(np.mat(self.syntheticData[n+1]).T-H*np.mat(x_f[ne]).T)).T # changed from n+1
+                yTilde=np.mat(self.syntheticData[n+1]).T+np.mat(np.random.multivariate_normal(np.zeros(self.syntheticDataDim),self.R)).T
+                x[ne]=(np.mat(x_f[ne]).T+k*(yTilde-H*np.mat(x_f[ne]).T)).T # changed from n+1
             mu=np.mat(np.mean(x,axis=0)).T # analysis mean
             P=np.cov(np.mat(x).T) # analysis covariance
 
             self.enkfReconstructionMean[n+1]=mu.T
             self.enkfReconstructionCov[n+1]=P
 
-    def runSquareRootENKF(self):
+    def runSquareRootENKF(self,alpha=None,r=None):
         H=np.zeros((self.syntheticDataDim,self.lorenzDim))
         for n in range(self.syntheticDataDim):
             H[n][1+2*n]=1
@@ -118,12 +132,23 @@ class EnsembleKalmanFilter:
 
             mu_f = np.mat(np.mean(x_f, axis=0)).T
 
+            # Perform inflation.
+            if(alpha!=None):
+                for ne in range(self.nEnsembles):
+                    x_f[ne]=mu_f.T+math.sqrt(1+alpha)*(x_f[ne]-mu_f.T)
+
             Xtranspose=np.full((self.nEnsembles,self.lorenzDim),np.nan)
             for ne in range(self.nEnsembles):
                 Xtranspose[ne]=np.mat(x_f[ne])-mu_f.T
 
             X=np.mat(Xtranspose/math.sqrt(self.nEnsembles-1)).T
             P_f=X*X.T
+
+            # Perform localization.
+            if (r != None):
+                P_f = np.multiply(self.constructLocalizationMatrix(r), P_f)
+
+            P_farray = np.array(P_f)
 
             k = P_f * H.T * la.inv(H * P_f * H.T + self.R)
 
@@ -141,6 +166,17 @@ class EnsembleKalmanFilter:
             self.enkfReconstructionMean[n+1]=mu.T
             self.enkfReconstructionCov[n+1]=P
 
+    def constructLocalizationMatrix(self,r):
+        L=np.zeros((self.lorenzDim, self.lorenzDim))
+        for i in range(self.lorenzDim):
+            for j in range(i,self.lorenzDim):
+                dist=min(abs(i-j),-abs(i-j)%self.lorenzDim)
+                L[i][j]=np.exp(-(dist/r)**2)
+        L=np.mat(L)
+        L=L+L.T-np.mat(np.diag(np.diag(L)))
+        Larray = np.array(L)
+        return L
+
     def computeRMSE(self):
         self.rmse=np.zeros(self.totalTimeSteps + 1)
         for t in range(self.totalTimeSteps+1):
@@ -148,6 +184,13 @@ class EnsembleKalmanFilter:
             for n in range(self.lorenzDim):
                 self.rmse[t]+=(self.trueState[t][n]-self.enkfReconstructionMean[t][n])**2
             self.rmse[t]=math.sqrt(self.rmse[t]/self.lorenzDim)
+
+    def computeTimeAveragedRMSE(self): # run only after running computeRMSE (to calculate self.rmse first)
+        spinUpIndex=int(self.totalTimeSteps/2)
+        stableRMSE=np.full(len(self.rmse)-spinUpIndex,np.nan)
+        for t in range(len(stableRMSE)):
+            stableRMSE[t]=self.rmse[spinUpIndex+t]
+        return np.mean(stableRMSE)
 
     def computeEnkfReconstructCovTrace(self):
         self.kfReconstructionCovTrace = np.full(self.totalTimeSteps+1,np.nan)
@@ -165,16 +208,34 @@ class EnsembleKalmanFilter:
 
         plt.show()
 
+    def optimizeInflationLocalization(self):
+        timeAveragedRMSE=10
+        # for alpha in np.arange(0.05,0.5,0.05):
+        #     for r in np.arange(2,3,0.1):
+        for alpha in np.arange(0.25, 1, 0.25):
+            for r in np.arange(1, 4, 0.5):
+                # self.runPerturbedObsENKF(alpha,r) # switch between perturbed-obs and square-root EnKF
+                self.runSquareRootENKF(alpha, r)
+                self.computeRMSE()
+                timeAveragedRMSE=self.computeTimeAveragedRMSE()
+                print("Computed for alpha = "+str(alpha)+" and r = "+str(r)+": RMSE = "+str(timeAveragedRMSE))
+
 def main():
-    e=EnsembleKalmanFilter(500)
+    e=EnsembleKalmanFilter(20,400)
     e.generateSyntheticDataLorenz96Int()
     e.generateInitialEnsembleLorenz96Int()
     # e.runPerturbedObsENKF()
-    e.runSquareRootENKF()
+    e.runPerturbedObsENKF(0.25,3.4)
+    # e.runSquareRootENKF()
+    # e.runSquareRootENKF(0.4, 3.4)
+    # e.constructLocalizationMatrix(4)
+    # print("Square Root EnKF")
+    # e.optimizeInflationLocalization()
     e.computeRMSE()
     e.computeEnkfReconstructCovTrace()
+    # timeAveragedRMSE=e.computeTimeAveragedRMSE()
+    # print(timeAveragedRMSE)
     e.plotError()
-    print("end")
 
 if __name__ == "__main__":
     main()

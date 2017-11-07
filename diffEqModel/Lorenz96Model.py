@@ -65,8 +65,8 @@ class Lorenz96Model:
         return r
 
 def main():
-    x=np.mat(np.identity(5))
-    print(x[:,4])
+    a=np.random.multivariate_normal(np.zeros(5), np.mat(np.identity(5)))
+    print(a)
 
     # l = Lorenz96Model()
     # y=l.lorenzInitial
