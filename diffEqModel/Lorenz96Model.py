@@ -54,6 +54,44 @@ class Lorenz96Model:
         # return the state derivatives
         return d
 
+    def linearLorenz96(self, x, timeIncrement):  # x an array with shape (totalTimeSteps+1,self.lorenzDim)
+        Mtilde = np.mat(np.identity(self.lorenzDim)) + timeIncrement * np.mat(self.derivativeLorenz96(x[0]))
+
+        for i in range(1, len(x)):
+            Mtilde = (np.mat(np.identity(self.lorenzDim)) + timeIncrement * np.mat(
+                self.derivativeLorenz96(x[i]))) * Mtilde
+
+        return Mtilde
+
+    def derivativeLorenz96(self, x):
+        N = self.lorenzDim
+        deriv = np.zeros((N, N))
+
+        # first the 3 edge cases: i=1,2,N
+        deriv[0][0] = -1
+        deriv[0][1] = x[N - 1]
+        deriv[0][N - 2] = x[N - 1]
+        deriv[0][N - 1] = x[1] - x[N - 2]
+
+        deriv[1][0] = x[2] - x[N - 1]
+        deriv[1][1] = -1
+        deriv[1][2] = x[0]
+        deriv[1][N - 1] = -x[0]
+
+        deriv[N - 1][0] = x[N - 2]
+        deriv[N - 1][N - 3] = -x[N - 2]
+        deriv[N - 1][N - 2] = x[0] - x[N - 3]
+        deriv[N - 1][N - 1] = -1
+
+        # then the general case
+        for i in range(2, N - 1):
+            deriv[i][i - 2] = -x[i - 1]
+            deriv[i][i - 1] = x[i + 1] - x[i - 2]
+            deriv[i][i] = -1
+            deriv[i][i + 1] = x[i - 1]
+
+        return deriv
+
     def solveLorenz96RK4(self,timeSteps):
         r=ode(self.Lorenz96RK4).set_integrator("dopri5")
         r.set_initial_value(self.lorenzInitial,0)
