@@ -3,15 +3,16 @@ import numpy as np
 import numpy.linalg as la
 import scipy.linalg as sla
 import scipy.optimize as op
-from diffEqModel.Lorenz96Model import Lorenz96Model
+from model.Lorenz96Model import Lorenz96Model
+import sampling.ImportanceSampler as ImportanceSampler
 import math
 
 class EnsembleKalmanFilter:
     def __init__(self,nEnsembles=20,lorenzDim=40):
         self.nEnsembles=nEnsembles
         self.lorenzDim=lorenzDim
-        self.timeIncrement = 0.01
-        self.finalTime = 25
+        self.timeIncrement = 0.1
+        self.finalTime = 5
         self.totalTimeSteps=int(self.finalTime/self.timeIncrement)
         self.trueState = np.full((self.totalTimeSteps + 1, self.lorenzDim), np.nan)
         self.syntheticDataDim=int(self.lorenzDim/2)
@@ -38,8 +39,8 @@ class EnsembleKalmanFilter:
 
     def generateSyntheticDataLorenz96Int(self):
         L96=Lorenz96Model(self.lorenzDim)
-        # initial=L96.solveLorenz96Int(np.arange(0,101,self.timeIncrement)) # use for self.timeIncrement=0.1
-        initial = L96.solveLorenz96Int(np.arange(0, 11, self.timeIncrement))  # use for self.timeIncrement=0.01
+        initial = L96.solveLorenz96Int(np.arange(0, 101, self.timeIncrement))  # use for self.timeIncrement=0.1
+        # initial = L96.solveLorenz96Int(np.arange(0, 11, self.timeIncrement))  # use for self.timeIncrement=0.01
         L96.lorenzInitial = initial[len(initial)-1]
         simulation=L96.solveLorenz96Int(np.arange(0,self.finalTime+self.timeIncrement,self.timeIncrement))
         for n in range(len(self.syntheticData)):
@@ -58,8 +59,8 @@ class EnsembleKalmanFilter:
 
     def generateInitialEnsembleLorenz96Int(self):
         L96=Lorenz96Model(self.lorenzDim)
-        # initial=L96.solveLorenz96Int(np.arange(0,101,self.timeIncrement)) # use for self.timeIncrement=0.1
-        initial = L96.solveLorenz96Int(np.arange(0, 31, self.timeIncrement))  # use for self.timeIncrement=0.01
+        initial = L96.solveLorenz96Int(np.arange(0, 101, self.timeIncrement))  # use for self.timeIncrement=0.1
+        # initial = L96.solveLorenz96Int(np.arange(0, 31, self.timeIncrement))  # use for self.timeIncrement=0.01
         L96.lorenzInitial=initial[len(initial)-1]
         # simulation=L96.solveLorenz96Int(np.arange(0,501,self.timeIncrement)) # use for self.timeIncrement=0.1
         simulation = L96.solveLorenz96Int(np.arange(0, 51, self.timeIncrement))  # use for self.timeIncrement=0.01
@@ -81,7 +82,7 @@ class EnsembleKalmanFilter:
         # mu must be a column vector
         r1 = sla.sqrtm(la.inv(np.mat(B))) * (np.mat(x).T - mu)
         r2 = sla.sqrtm(la.inv(self.R)) * (
-        self.getH() * np.mat(self.runL96Last(x, 0.2, self.timeIncrement)).T - np.mat(y).T)
+                    self.getH() * np.mat(self.runL96Last(x, 0.2, self.timeIncrement)).T - np.mat(y).T)
 
         r = np.append(np.array(r1).flatten(), np.array(r2).flatten())
         return r
@@ -118,6 +119,39 @@ class EnsembleKalmanFilter:
         H = np.mat(H)
 
         return H
+
+    def runStandardPfL96(self,
+                         obsTimeSteps=1):  # obsTimeSteps=1 means obs at every model step, =2 means obs at every other model step
+        H = self.getH()
+        w = np.full(self.nEnsembles, np.nan)
+
+        x = self.initialEnsemble
+        mu = np.mat(np.mean(x, axis=0)).T
+        P = np.cov(np.mat(x).T)
+
+        y = self.syntheticData
+
+        self.enkfReconstructionMean[0] = mu.T
+        self.enkfReconstructionCov[0] = P
+
+        L96 = Lorenz96Model(self.lorenzDim)
+
+        for n in range(self.totalTimeSteps):
+            for ne in range(self.nEnsembles):
+                L96.lorenzInitial = x[ne]
+                x[ne] = L96.solveLorenz96Int(np.array([0, self.timeIncrement]))[1]
+            if (n + 1) % obsTimeSteps == 0:
+                for ne in range(self.nEnsembles):
+                    w[ne] = np.exp(-(np.mat(y[n + 1]).T - H * np.mat(x[ne]).T).T * la.inv(self.R) * (
+                                np.mat(y[n + 1]).T - H * np.mat(x[ne]).T) / 2)
+
+                x = ImportanceSampler.performResamplingND(self.lorenzDim, w, x)
+
+            mu = np.mat(np.mean(x, axis=0)).T
+            P = np.cov(np.mat(x).T)
+
+            self.enkfReconstructionMean[n + 1] = mu.T
+            self.enkfReconstructionCov[n + 1] = P
 
     def runPerturbedObsENKF(self,alpha=None,r=None):
         H=np.zeros((self.syntheticDataDim,self.lorenzDim))
@@ -289,11 +323,12 @@ def main():
     # e.computeResiduals(np.ones(e.lorenzDim),e.backgroundMean,e.backgroundCov,e.syntheticData[0])
     # e.computeJacobian(np.ones(e.lorenzDim), e.backgroundCov)
     print(x)
+    print(len(x))
     print("complete")
     # e.runPerturbedObsENKF()
-    # e.runPerturbedObsENKF(0.25, 3.4)
+    # e.runPerturbedObsENKF(0.25, 3.4) # optimized localization and inflation for timeIncrement=0.1
     # e.runSquareRootENKF()
-    # e.runSquareRootENKF(0.4, 3.4)
+    # e.runSquareRootENKF(0.4, 3.4) # optimized localization and inflation for timeIncrement=0.1
     # e.constructLocalizationMatrix(4)
     # print("Square Root EnKF")
     # e.optimizeInflationLocalization()
@@ -305,13 +340,14 @@ def main():
 
 
 # # HW 3: Ensemble Kalman Filter
-#     e=EnsembleKalmanFilter(100,40)
+#     e=EnsembleKalmanFilter(20,40)
 #     e.generateSyntheticDataLorenz96Int()
 #     e.generateInitialEnsembleLorenz96Int()
 #     # e.runPerturbedObsENKF()
-#     e.runPerturbedObsENKF(0.25,3.4)
+#     e.runPerturbedObsENKF(0.25,3.4) # optimized localization and inflation for timeIncrement=0.1
 #     # e.runSquareRootENKF()
-#     # e.runSquareRootENKF(0.4, 3.4)
+#     # e.runSquareRootENKF(0.4, 3.4) # optimized localization and inflation for timeIncrement=0.1
+#     # e.runStandardPfL96(1)
 #     # e.constructLocalizationMatrix(4)
 #     # print("Square Root EnKF")
 #     # e.optimizeInflationLocalization()
